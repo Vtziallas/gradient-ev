@@ -843,13 +843,14 @@ def test_battery_power_drive_and_regen_branches():
 
 def test_regen_clamped_to_max_regen_kw():
     ctx = TripContext(start_soc_pct=50.0)
-    r = hill_route(n=100, grade=0.12, speed_mps=30.0)      # extreme descent
-    w = WeatherSamples.uniform(100)
-    f = compute_forces(r, w, MODEL3, ctx)
-    p = battery_power_w(f, r, w, MODEL3, ctx, soc_pct=50.0)
+    r = hill_route(n=100, grade=0.20, speed_mps=45.0)      # extreme descent: exceeds the
+    w = WeatherSamples.uniform(100)                        # 120 kW cap at soc=50 (full
+    f = compute_forces(r, w, MODEL3, ctx)                  # regen headroom), so the clamp
+    p = battery_power_w(f, r, w, MODEL3, ctx, soc_pct=50.0)  # must actually engage here
     aux = aux_power_w(w, ctx, MODEL3)
     floor = -MODEL3.max_regen_kw * 1000.0 * MODEL3.regen_eff + aux
     assert np.all(p >= floor - 1e-6)
+    assert np.any(np.isclose(p, floor, atol=1e-6))         # clamp must actually bind somewhere
 
 
 def test_battery_eff_cold_penalty():
