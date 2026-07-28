@@ -18,8 +18,10 @@ def test_smoothing_flattens_bridge_spike():
     s = np.arange(200, dtype=np.float64) * 25.0
     h = np.zeros(200)
     h[100] = 40.0                                         # single-sample DEM artifact
-    g = compute_grade(s, smooth_elevation(h))
-    assert np.max(np.abs(g)) < 0.20                       # raw spike would be 1.6
+    smoothed = smooth_elevation(h)
+    assert np.max(np.abs(smoothed)) < 10.0                # smooth_elevation itself must cut the spike (raw 40)
+    g = compute_grade(s, smoothed)
+    assert np.max(np.abs(g)) < 0.20                        # full pipeline also stays reasonably flat
 
 
 def test_grade_forward_difference_and_clamp():
