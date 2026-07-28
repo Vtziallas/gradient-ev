@@ -5,7 +5,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from gradient_energy.types import RouteSamples, TripContext, VehicleSpec, WeatherSamples
+from gradient_energy.types import (
+    DriverProfile,
+    EnergyResult,
+    RouteSamples,
+    TripContext,
+    VehicleSpec,
+    WeatherSamples,
+)
 
 G = 9.80665
 R_D = 287.05
@@ -118,3 +125,51 @@ def battery_power_w(forces: Forces, route: RouteSamples, weather: WeatherSamples
     drive = p_wheel / vehicle.drivetrain_eff + p_aux
     regen = np.maximum(p_wheel, -p_regen_cap) * vehicle.regen_eff + p_aux
     return np.where(p_wheel >= 0.0, drive, regen)  # type: ignore[no-any-return]
+
+
+def integrate(route: RouteSamples, weather: WeatherSamples, vehicle: VehicleSpec,
+              ctx: TripContext, driver: DriverProfile | None = None) -> EnergyResult:
+    route.validate()
+    calib = (driver or DriverProfile()).calibration_factor
+
+    forces = compute_forces(route, weather, vehicle, ctx)
+    v = route.expected_speed_mps
+    p_wheel = forces.f_total_n * v
+    p_aux = aux_power_w(weather, ctx, vehicle)
+    p_drive = p_wheel / vehicle.drivetrain_eff + p_aux    # valid where p_wheel >= 0
+
+    ds = np.append(np.diff(route.s_m), 0.0)
+    dt = np.where(v > 0, ds / v, 0.0)
+    eta_b = battery_eff(weather.temp_c)
+    usable_wh = vehicle.usable_kwh * 1000.0 * vehicle.degradation_factor
+
+    n = route.n
+    p_batt = np.empty(n)
+    e_wh = np.zeros(n)
+    soc = np.empty(n)
+    soc[0] = ctx.start_soc_pct
+    regen_cap_temp = vehicle.max_regen_kw * 1000.0 * np.clip(
+        0.4 + 0.6 * (weather.temp_c + 10.0) / 15.0, 0.4, 1.0)
+
+    s = ctx.start_soc_pct
+    for i in range(n):
+        if p_wheel[i] >= 0.0:
+            p = p_drive[i]
+        else:
+            cap = regen_cap_temp[i] * np.clip((100.0 - s) / 10.0, 0.0, 1.0)
+            p = max(p_wheel[i], -cap) * vehicle.regen_eff + p_aux[i]
+        p_batt[i] = p
+        if i < n - 1:
+            e = p * dt[i] / 3600.0                        # Wh at battery terminals
+            if e > 0.0:
+                e *= calib
+            e_wh[i] = e
+            s = max(0.0, s - e / (usable_wh * eta_b[i]) * 100.0)
+            soc[i + 1] = s
+
+    pos = e_wh[e_wh > 0.0].sum()
+    neg = -e_wh[e_wh < 0.0].sum()
+    return EnergyResult(
+        p_batt_w=p_batt, e_wh=e_wh, soc_pct=soc, dt_s=dt,
+        energy_used_kwh=float(pos / 1000.0), energy_regen_kwh=float(neg / 1000.0),
+    )
