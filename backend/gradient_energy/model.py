@@ -72,3 +72,49 @@ def compute_forces(route: RouteSamples, weather: WeatherSamples,
         f_roll_n=f_roll, f_aero_n=f_aero, f_grade_n=f_grade, f_accel_n=f_accel,
         f_total_n=f_roll + f_aero + f_grade + f_accel,
     )
+
+
+ELECTRONICS_W = 250.0
+HEAT_W_PER_K = 220.0      # cabin heating demand per Kelvin of deficit (v1 heuristic)
+COOL_W_PER_K = 180.0
+COOL_COP = 2.5
+DEFOG_W = 300.0
+
+
+def hvac_power_w(weather: WeatherSamples, ctx: TripContext, vehicle: VehicleSpec) -> np.ndarray:
+    n = weather.temp_c.size
+    p = np.zeros(n)
+    if ctx.hvac_mode == "heat":
+        dt = np.clip(ctx.cabin_target_c - weather.temp_c, 0.0, None)
+        demand = HEAT_W_PER_K * dt
+        cop = np.maximum(1.0, 3.0 - 0.05 * dt) if vehicle.has_heat_pump else np.ones(n)
+        p = demand / cop
+    elif ctx.hvac_mode == "cool":
+        dt = np.clip(weather.temp_c - ctx.cabin_target_c, 0.0, None)
+        p = COOL_W_PER_K * dt / COOL_COP
+    return p + np.where(weather.rain_mm_h > 0.1, DEFOG_W, 0.0)
+
+
+def aux_power_w(weather: WeatherSamples, ctx: TripContext, vehicle: VehicleSpec) -> np.ndarray:
+    return vehicle.aux_base_w + hvac_power_w(weather, ctx, vehicle) + ELECTRONICS_W
+
+
+def regen_derate(soc_pct: float | np.ndarray, temp_c: np.ndarray) -> np.ndarray:
+    f_soc = np.clip((100.0 - np.asarray(soc_pct, dtype=np.float64)) / 10.0, 0.0, 1.0)
+    f_temp = np.clip(0.4 + 0.6 * (temp_c + 10.0) / 15.0, 0.4, 1.0)
+    return f_soc * f_temp
+
+
+def battery_eff(temp_c: np.ndarray) -> np.ndarray:
+    return np.clip(1.0 - 0.008 * np.clip(10.0 - temp_c, 0.0, None) * (0.08 / 0.12), 0.92, 1.0)
+
+
+def battery_power_w(forces: Forces, route: RouteSamples, weather: WeatherSamples,
+                    vehicle: VehicleSpec, ctx: TripContext, soc_pct: float) -> np.ndarray:
+    v = route.expected_speed_mps
+    p_wheel = forces.f_total_n * v
+    p_aux = aux_power_w(weather, ctx, vehicle)
+    p_regen_cap = vehicle.max_regen_kw * 1000.0 * regen_derate(soc_pct, weather.temp_c)
+    drive = p_wheel / vehicle.drivetrain_eff + p_aux
+    regen = np.maximum(p_wheel, -p_regen_cap) * vehicle.regen_eff + p_aux
+    return np.where(p_wheel >= 0.0, drive, regen)  # type: ignore[no-any-return]
