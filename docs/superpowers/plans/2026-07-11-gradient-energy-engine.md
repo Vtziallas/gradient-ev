@@ -1496,11 +1496,20 @@ def test_band_is_ordered_and_contains_optimum():
     assert b.min_kmh <= b.optimal_kmh <= b.max_kmh
 
 
-def test_climb_lowers_optimal_speed_vs_flat_highway():
+def test_climb_widens_band_and_reports_grade_reason():
+    # Grade force (m*g*sin(theta)) is independent of v, so under the v1 flat drivetrain
+    # efficiency map (EnergyEngine.md's documented simplification -- no speed x load
+    # map yet) it shifts e(v) by a v-independent additive constant and cannot move
+    # WHERE the aero/aux tradeoff bottoms out -- verified analytically and numerically
+    # across grade 0.00-0.10, optimal_kmh stays fixed at 34 in every case. What climbing
+    # DOES do: it dominates total force, shrinking the *relative* sensitivity of the
+    # aero term, so the 2%-of-optimal tolerance band admits a wider range of speeds
+    # (14 km/h wide at grade=0 -> 28 km/h wide at grade=0.06, monotonically increasing
+    # with grade). That widening -- plus the grade_up reason -- is what this test checks.
     flat = band(speed_limit_mps=36.11)
     climb = band(grade=0.06, speed_limit_mps=36.11)
-    assert climb.optimal_kmh < flat.optimal_kmh
     assert "grade_up" in climb.reasons
+    assert (climb.max_kmh - climb.min_kmh) > (flat.max_kmh - flat.min_kmh)
 
 
 def test_headwind_lowers_optimum_and_is_reported():
