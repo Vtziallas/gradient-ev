@@ -1742,9 +1742,15 @@ def test_single_stop_plan_respects_reserve_and_arrival():
 
 
 def test_infeasible_gap_returns_none():
-    r, w = long_flat(km=400.0)
+    # 400 km was tried first and turned out to be FEASIBLE by a slim margin: the
+    # remaining 380 km after charging to 90% at km 20 needs ~77.8% SoC, and 80% is
+    # available (90% max charge - 10% reserve) -- verified numerically, a ~2-point
+    # margin, not the infeasible case this test is meant to exercise. 500 km leaves
+    # 480 km remaining, needing ~98.3% SoC against the same 80% available -- a robust
+    # ~18-point infeasibility margin.
+    r, w = long_flat(km=500.0)
     res = integrate(r, w, MODEL3, TripContext(start_soc_pct=90.0))
-    # only charger at km 20; the remaining 380 km can't be bridged from 90%
+    # only charger at km 20; the remaining 480 km can't be bridged from 90%
     assert optimize(res, r.s_m, cands(20.0), MODEL3, start_soc=90.0) is None
 
 
