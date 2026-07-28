@@ -949,7 +949,7 @@ git add backend && git commit -m "feat(engine): power model with regen derating 
 import numpy as np
 
 from gradient_energy.model import integrate
-from gradient_energy.types import DriverProfile, TripContext, WeatherSamples
+from gradient_energy.types import DriverProfile, RouteSamples, TripContext, WeatherSamples
 from tests.engine.conftest import MODEL3, flat_route, hill_route
 
 
@@ -986,8 +986,23 @@ def test_regen_recovery_never_exceeds_climb_cost():
 
 
 def test_high_soc_suppresses_regen():
-    r = hill_route(n=800)
-    w = WeatherSamples.uniform(800)
+    # Pure descent from sample 0 (no preceding climb): with hill_route's climb-then-
+    # descend shape, the climb alone drains a 99.5% start down to ~94% by the time
+    # descent begins, and at grade 5%/20 m/s the regen demand (~12.6 kW) never nears
+    # even the suppressed cap (~69 kW at 94%) -- so suppression would never engage and
+    # this test would pass or fail independent of the mechanism it's meant to check.
+    # A route that starts descending immediately keeps the entered start_soc in force
+    # exactly when regen begins, so the suppression is actually exercised.
+    n = 400
+    s_m = np.arange(n, dtype=np.float64) * 25.0
+    grade = np.full(n, -0.05)
+    elevation_m = np.concatenate(([0.0], np.cumsum(grade[:-1] * 25.0)))
+    r = RouteSamples(
+        s_m=s_m, elevation_m=elevation_m, grade=grade,
+        curvature_1pm=np.zeros(n), heading_deg=np.zeros(n),
+        speed_limit_mps=np.full(n, 27.78), expected_speed_mps=np.full(n, 20.0),
+    )
+    w = WeatherSamples.uniform(n)
     hi = integrate(r, w, MODEL3, TripContext(start_soc_pct=99.5))
     lo = integrate(r, w, MODEL3, TripContext(start_soc_pct=60.0))
     assert hi.energy_regen_kwh < lo.energy_regen_kwh
