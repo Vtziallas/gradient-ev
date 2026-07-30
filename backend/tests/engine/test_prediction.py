@@ -38,3 +38,21 @@ def test_worst_case_reflects_headwind_and_load():
     p = predict(r, w, MODEL3, TripContext(start_soc_pct=80.0))
     spread = p.best_case_soc - p.worst_case_soc
     assert 0.1 < spread < 15.0
+
+
+def test_worst_case_spread_survives_tailwind():
+    """Regression for the wind-sensitivity asymmetry: the sensitivity bounds used
+    to perturb wind SPEED magnitude directly (e.g. always +2 m/s for "worst case"),
+    but the physics only cares about the headwind component (speed * cos(dir -
+    heading)). In a tailwind, adding to the speed magnitude makes conditions
+    strictly BETTER, fighting the pessimism the worst-case shift is meant to add
+    -- the spread could collapse to ~0.05 points versus ~0.68 for the equivalent
+    headwind case. The fix perturbs the headwind component directly and
+    sign-aware, so the spread must stay meaningfully wide even in a tailwind.
+    """
+    r = flat_route(n=400)
+    w = WeatherSamples.uniform(400, wind_speed_mps=8.0, wind_dir_deg=180.0)  # tailwind
+    p = predict(r, w, MODEL3, TripContext(start_soc_pct=80.0))
+    spread = p.best_case_soc - p.worst_case_soc
+    assert spread > 0.1
+    assert p.worst_case_soc < p.arrival_soc < p.best_case_soc

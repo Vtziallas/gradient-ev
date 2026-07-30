@@ -106,10 +106,15 @@ def aux_power_w(weather: WeatherSamples, ctx: TripContext, vehicle: VehicleSpec)
     return vehicle.aux_base_w + hvac_power_w(weather, ctx, vehicle) + ELECTRONICS_W
 
 
+def temp_derate_factor(temp_c: np.ndarray) -> np.ndarray:
+    """Temperature-only regen derating factor, shared by regen_derate() and integrate()."""
+    return np.clip(0.4 + 0.6 * (temp_c + 10.0) / 15.0, 0.4, 1.0)
+
+
 def regen_derate(soc_pct: float | np.ndarray, temp_c: np.ndarray) -> np.ndarray:
     f_soc = np.clip((100.0 - np.asarray(soc_pct, dtype=np.float64)) / 10.0, 0.0, 1.0)
-    f_temp = np.clip(0.4 + 0.6 * (temp_c + 10.0) / 15.0, 0.4, 1.0)
-    return f_soc * f_temp
+    f_temp = temp_derate_factor(temp_c)
+    return f_soc * f_temp  # type: ignore[no-any-return]
 
 
 def battery_eff(temp_c: np.ndarray) -> np.ndarray:
@@ -148,10 +153,11 @@ def integrate(route: RouteSamples, weather: WeatherSamples, vehicle: VehicleSpec
     e_wh = np.zeros(n)
     soc = np.empty(n)
     soc[0] = ctx.start_soc_pct
-    regen_cap_temp = vehicle.max_regen_kw * 1000.0 * np.clip(
-        0.4 + 0.6 * (weather.temp_c + 10.0) / 15.0, 0.4, 1.0)
+    cum_drop = np.zeros(n)
+    regen_cap_temp = vehicle.max_regen_kw * 1000.0 * temp_derate_factor(weather.temp_c)
 
     s = ctx.start_soc_pct
+    drop = 0.0
     for i in range(n):
         if p_wheel[i] >= 0.0:
             p = p_drive[i]
@@ -164,12 +170,16 @@ def integrate(route: RouteSamples, weather: WeatherSamples, vehicle: VehicleSpec
             if e > 0.0:
                 e *= calib
             e_wh[i] = e
-            s = max(0.0, s - e / (usable_wh * eta_b[i]) * 100.0)
+            d_soc = e / (usable_wh * eta_b[i]) * 100.0
+            s = max(0.0, s - d_soc)
             soc[i + 1] = s
+            drop += d_soc
+            cum_drop[i + 1] = drop
 
     pos = e_wh[e_wh > 0.0].sum()
     neg = -e_wh[e_wh < 0.0].sum()
     return EnergyResult(
         p_batt_w=p_batt, e_wh=e_wh, soc_pct=soc, dt_s=dt,
         energy_used_kwh=float(pos / 1000.0), energy_regen_kwh=float(neg / 1000.0),
+        cum_soc_drop_pct=cum_drop,
     )

@@ -112,6 +112,14 @@ class EnergyResult:
     dt_s: np.ndarray             # per-segment traversal time, len n (last = 0)
     energy_used_kwh: float       # sum of positive e_wh / 1000
     energy_regen_kwh: float      # -sum of negative e_wh / 1000
+    cum_soc_drop_pct: np.ndarray  # eta_b-adjusted cumulative SoC consumed (%) from
+                                  # start through sample i, unclamped (no 0/100 floor
+                                  # or ceiling); cum_soc_drop_pct[0] == 0. Consumers
+                                  # that need to re-derive SoC deltas from energy
+                                  # (e.g. charging.optimize()) should interpolate on
+                                  # this field rather than dividing e_wh by usable_wh
+                                  # directly, since it already folds in the per-sample
+                                  # battery efficiency eta_b the same way soc_pct does.
 
 
 @dataclass

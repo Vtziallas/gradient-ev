@@ -76,28 +76,45 @@ def build_timeline(result: EnergyResult, route: RouteSamples, weather: WeatherSa
     starts = np.concatenate(([0], change))
     ends = np.concatenate((change, [route.n]))
 
-    # merge short runs into the previous run
+    # runs of equal class, not yet merged: (start, end, code)
+    runs: list[tuple[int, int, int]] = [
+        (int(st), int(en), int(codes[st])) for st, en in zip(starts, ends)
+    ]
+
+    # Merge short runs so every emitted chapter is >= min_chapter_m (except possibly the
+    # very last, which has nothing after it to merge into). A short run in the middle/end
+    # merges BACKWARD into the previous chapter; a short run at the very start (nothing
+    # emitted yet to merge into) merges FORWARD into the following run instead of being
+    # emitted standalone.
     merged: list[tuple[int, int, int]] = []                        # (start, end, code)
-    for st, en in zip(starts, ends):
+    i = 0
+    while i < len(runs):
+        st, en, code = runs[i]
         length = float(route.s_m[min(en, route.n - 1)] - route.s_m[st])
-        if merged and length < min_chapter_m:
-            p_st, p_en, p_code = merged[-1]
+        if length < min_chapter_m and merged:
+            p_st, _p_en, p_code = merged[-1]
             merged[-1] = (p_st, en, p_code)
+        elif length < min_chapter_m and i + 1 < len(runs):
+            nxt_st, nxt_en, nxt_code = runs[i + 1]
+            runs[i + 1] = (st, nxt_en, nxt_code)
         else:
-            merged.append((int(st), int(en), int(codes[st])))
+            merged.append((st, en, code))
+        i += 1
 
     chapters: list[Chapter] = []
     for st, en, code in merged:
         idx = slice(st, en)
-        last = min(en, route.n) - 1
-        delta = float(result.soc_pct[last] - result.soc_pct[st])
+        # Chapters tile the route with no gaps: end_m is the start of the next chapter
+        # (route.s_m[en]) or the route's own end if this is the last chapter.
+        end_m = float(route.s_m[en]) if en < route.n else float(route.s_m[-1])
+        delta = float(result.soc_pct[min(en, route.n - 1)] - result.soc_pct[st])
         cause = _cause(idx, route, weather, result, ctx, vehicle)
         summit = None
         if cause == "climb":
             summit = next_summit_distance(route.s_m, route.elevation_m, st)
         chapters.append(Chapter(
             klass=CLASS_NAMES[code],
-            start_m=float(route.s_m[st]), end_m=float(route.s_m[last]),
+            start_m=float(route.s_m[st]), end_m=end_m,
             delta_soc=delta, cause=cause,
             grade_avg_pct=float(np.mean(route.grade[idx])) * 100.0,
             distance_to_summit_m=summit,

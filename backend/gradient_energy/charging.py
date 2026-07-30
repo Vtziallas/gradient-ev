@@ -9,6 +9,8 @@ explicitly permits this simplification since correctness and the tests are the c
 """
 from __future__ import annotations
 
+from functools import lru_cache
+
 import numpy as np
 
 from gradient_energy.types import (
@@ -22,10 +24,18 @@ from gradient_energy.types import (
 SOC_STEP = 5.0          # departure grid step (%)
 
 
+@lru_cache(maxsize=64)
+def _curve_arrays(charge_curve: tuple[tuple[float, float], ...]) -> tuple[np.ndarray, np.ndarray]:
+    """Charge curve as plain (soc, kw) arrays, hoisted once per distinct curve rather
+    than rebuilt via list comprehension on every _curve_kw()/charge_minutes() call."""
+    socs = np.array([p[0] for p in charge_curve], dtype=np.float64)
+    kws = np.array([p[1] for p in charge_curve], dtype=np.float64)
+    return socs, kws
+
+
 def _curve_kw(vehicle: VehicleSpec, soc: float) -> float:
     """Charge power (kW) the vehicle accepts at a given SoC, linearly interpolated."""
-    socs = [p[0] for p in vehicle.charge_curve]
-    kws = [p[1] for p in vehicle.charge_curve]
+    socs, kws = _curve_arrays(vehicle.charge_curve)
     return float(np.interp(soc, socs, kws))
 
 
@@ -34,19 +44,20 @@ def charge_minutes(vehicle: VehicleSpec, from_soc: float, to_soc: float,
     """Minutes to charge from `from_soc` to `to_soc`, integrating 1 % SoC steps.
 
     Per step the accepted power is min(curve(soc), station_kw); time for the step is
-    (energy for 1 % of usable capacity) / power.
+    (energy for 1 % of usable capacity) / power. Vectorized over all steps at once
+    (instead of a per-step Python loop + list-comprehension rebuild) so cost stays flat
+    as the number of charging candidates/states considered by optimize() grows.
     """
     if to_soc <= from_soc:
         return 0.0
     usable = vehicle.usable_kwh * vehicle.degradation_factor
-    minutes = 0.0
-    soc = from_soc
-    while soc < to_soc - 1e-9:
-        step = min(1.0, to_soc - soc)
-        kw = min(_curve_kw(vehicle, soc + step / 2.0), station_kw)
-        minutes += (step / 100.0 * usable) / kw * 60.0
-        soc += step
-    return minutes
+    socs, kws = _curve_arrays(vehicle.charge_curve)
+    starts = np.arange(from_soc, to_soc - 1e-9, 1.0)
+    ends = np.minimum(starts + 1.0, to_soc)
+    mids = (starts + ends) / 2.0
+    kw = np.minimum(np.interp(mids, socs, kws), station_kw)
+    steps = ends - starts
+    return float(np.sum(steps / 100.0 * usable / kw * 60.0))
 
 
 def optimize(result: EnergyResult, route_s_m: np.ndarray,
@@ -60,21 +71,23 @@ def optimize(result: EnergyResult, route_s_m: np.ndarray,
     SoC is never allowed to dip below `reserve_soc` anywhere along the route; final arrival
     must be >= `min_arrival_soc`.
     """
-    usable_wh = vehicle.usable_kwh * 1000.0 * vehicle.degradation_factor
-    # cum_wh[i] = battery energy (Wh) consumed from the start up to route sample i.
-    cum_wh = np.concatenate(([0.0], np.cumsum(result.e_wh[:-1])))
+    # cum_drop[i] = eta_b-adjusted cumulative SoC (%) consumed from the start up to route
+    # sample i, exactly as computed inside model.integrate() (including the temperature-
+    # dependent battery efficiency eta_b). Interpolating on this directly -- rather than
+    # re-deriving SoC from cum_wh via usable_wh alone -- keeps this optimizer consistent
+    # with integrate()'s own SoC bookkeeping, notably in cold weather where eta_b < 1.
+    cum_drop = result.cum_soc_drop_pct
     end_m = float(route_s_m[-1])
 
     def soc_drop_pct(from_m: float, to_m: float) -> float:
-        e = float(np.interp(to_m, route_s_m, cum_wh) - np.interp(from_m, route_s_m, cum_wh))
-        return e / usable_wh * 100.0
+        return float(np.interp(to_m, route_s_m, cum_drop) - np.interp(from_m, route_s_m, cum_drop))
 
     def reachable(from_m: float, soc: float, to_m: float) -> float | None:
         """Arrival SoC at `to_m`, or None if SoC dips below reserve anywhere en route."""
         mask = (route_s_m >= from_m) & (route_s_m <= to_m)
-        base = float(np.interp(from_m, route_s_m, cum_wh))
+        base = float(np.interp(from_m, route_s_m, cum_drop))
         if np.any(mask):
-            along = soc - (cum_wh[mask] - base) / usable_wh * 100.0
+            along = soc - (cum_drop[mask] - base)
             if float(along.min()) < reserve_soc:
                 return None
         arr = soc - soc_drop_pct(from_m, to_m)

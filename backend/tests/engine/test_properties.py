@@ -2,8 +2,10 @@ import numpy as np
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from gradient_energy.charging import optimize
 from gradient_energy.model import integrate
-from gradient_energy.types import TripContext, WeatherSamples
+from gradient_energy.speed import WeatherPoint, efficiency_band
+from gradient_energy.types import ChargerCandidate, TripContext, WeatherSamples
 from tests.engine.conftest import MODEL3, flat_route, hill_route
 
 
@@ -57,3 +59,87 @@ def test_soc_always_finite_in_bounds(soc: float, grade: float) -> None:
     res = integrate(r, w, MODEL3, TripContext(start_soc_pct=soc))
     assert np.all(np.isfinite(res.soc_pct))
     assert np.all((res.soc_pct >= 0.0) & (res.soc_pct <= 100.0))
+
+
+@settings(max_examples=100, deadline=None)
+@given(
+    grade=st.floats(-0.15, 0.15),
+    curvature_1pm=st.floats(0.0, 0.02),
+    speed_limit_kmh=st.floats(20.0, 130.0),
+    headwind_mps=st.floats(-15.0, 15.0),
+    temp_c=st.floats(-20.0, 40.0),
+    rain_mm_h=st.floats(0.0, 5.0),
+    snow=st.booleans(),
+)
+def test_speed_band_never_exceeds_speed_limit(
+    grade: float, curvature_1pm: float, speed_limit_kmh: float, headwind_mps: float,
+    temp_c: float, rain_mm_h: float, snow: bool,
+) -> None:
+    """UNWAIVABLE invariant: the recommended speed band must never exceed the
+    posted speed_limit, under any weather/route/vehicle combination."""
+    speed_limit_mps = speed_limit_kmh / 3.6
+    wp = WeatherPoint(
+        temp_c=temp_c, headwind_mps=headwind_mps, rain_mm_h=rain_mm_h, snow=snow,
+        humidity_pct=50.0, pressure_hpa=1013.25,
+    )
+    band = efficiency_band(
+        grade=grade, curvature_1pm=curvature_1pm, speed_limit_mps=speed_limit_mps,
+        traffic_flow_mps=None, weather_point=wp, vehicle=MODEL3,
+        ctx=TripContext(start_soc_pct=80.0),
+    )
+    if band is None:
+        return
+    limit_kmh = int(speed_limit_mps * 3.6)
+    assert band.max_kmh <= limit_kmh
+    assert band.optimal_kmh <= limit_kmh
+    assert band.min_kmh <= band.max_kmh
+
+
+@settings(max_examples=25, deadline=None)
+@given(
+    temp_c=st.floats(-15.0, 20.0),
+    km=st.floats(80.0, 350.0),
+    start_soc=st.floats(50.0, 95.0),
+    n_candidates=st.integers(0, 4),
+)
+def test_charging_plan_never_breaches_reserve(
+    temp_c: float, km: float, start_soc: float, n_candidates: int,
+) -> None:
+    """UNWAIVABLE invariant: a returned ChargingPlan must never dip below the
+    reserve SoC anywhere along the route -- checked against the SAME eta_b-adjusted
+    ground truth integrate() itself uses (result.cum_soc_drop_pct), not just
+    optimize()'s own internal bookkeeping. This is deliberately fuzzed with cold
+    temperatures (down to -15 C) since the bug this guards against (optimize()
+    dividing energy by usable_wh alone, ignoring the temperature-dependent battery
+    efficiency eta_b) was invisible at the fixture's default 15 C.
+    """
+    n = int(km * 1000.0 / 50.0) + 1
+    r = flat_route(n=n, spacing_m=50.0, speed_mps=27.0)
+    w = WeatherSamples.uniform(n, temp_c=temp_c)
+    ctx = TripContext(start_soc_pct=start_soc)
+    res = integrate(r, w, MODEL3, ctx)
+
+    positions = np.linspace(0.15, 0.85, max(n_candidates, 1)) * km * 1000.0
+    candidates = [
+        ChargerCandidate(f"c{i}", float(p), 150.0, 0.5, 0.0, 0.95, 2.0)
+        for i, p in enumerate(positions[:n_candidates])
+    ]
+    plan = optimize(res, r.s_m, candidates, MODEL3, start_soc=start_soc)
+    if plan is None:
+        return
+
+    reserve_soc = 10.0
+    tol = 0.5
+    prev_m, prev_soc = 0.0, start_soc
+    for stop in plan.stops:
+        drop = float(np.interp(stop.position_m, r.s_m, res.cum_soc_drop_pct)
+                     - np.interp(prev_m, r.s_m, res.cum_soc_drop_pct))
+        true_arr = prev_soc - drop
+        assert abs(true_arr - stop.arrival_soc) < tol
+        assert true_arr >= reserve_soc - tol               # UNWAIVABLE reserve
+        prev_m, prev_soc = stop.position_m, stop.departure_soc
+    drop = float(np.interp(r.s_m[-1], r.s_m, res.cum_soc_drop_pct)
+                 - np.interp(prev_m, r.s_m, res.cum_soc_drop_pct))
+    true_final = prev_soc - drop
+    assert abs(true_final - plan.arrival_soc) < tol
+    assert true_final >= reserve_soc - tol

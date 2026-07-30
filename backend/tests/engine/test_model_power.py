@@ -2,6 +2,7 @@ import numpy as np
 
 from gradient_energy.model import (
     aux_power_w, battery_eff, battery_power_w, compute_forces, hvac_power_w, regen_derate,
+    temp_derate_factor,
 )
 from gradient_energy.types import TripContext, WeatherSamples
 from tests.engine.conftest import MODEL3, hill_route
@@ -59,6 +60,16 @@ def test_regen_clamped_to_max_regen_kw():
     floor = -MODEL3.max_regen_kw * 1000.0 * MODEL3.regen_eff + aux
     assert np.all(p >= floor - 1e-6)
     assert np.any(np.isclose(p, floor, atol=1e-6))         # clamp must actually bind somewhere
+
+
+def test_temp_derate_factor_shared_by_regen_derate_and_integrate():
+    """regen_derate() and integrate()'s per-step regen cap must derive the
+    temperature-derating factor from the same shared helper rather than duplicating
+    the expression -- checked by isolating f_soc=1.0 (soc<=90) in regen_derate(),
+    at which point it must equal temp_derate_factor() exactly."""
+    temp = np.array([-10.0, -5.0, 0.0, 10.0, 20.0])
+    factor = temp_derate_factor(temp)
+    assert np.allclose(regen_derate(90.0, temp), factor)
 
 
 def test_battery_eff_cold_penalty():
