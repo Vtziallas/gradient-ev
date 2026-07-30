@@ -5,7 +5,10 @@
 Physics-based battery prediction, animated 3D terrain routes, an Energy Timeline, a live
 digital twin, and an eco coach — the definitive EV companion.
 
-**Status:** specification phase. No implementation yet.
+**Status:** `backend/gradient_energy` physics engine implemented — forces, power, SoC
+integration, prediction, energy timeline, speed band, charging optimizer, twin filter,
+with property/analytic/golden test coverage (79 tests, `uv run pytest` from `backend/`).
+Rest of the platform (API, mobile, infra) is still specification phase.
 
 ## Specification
 
