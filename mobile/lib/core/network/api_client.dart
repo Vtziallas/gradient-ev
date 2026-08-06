@@ -21,9 +21,9 @@ class ApiClient {
   ApiClient({required ApiFlavor flavor, String? Function()? authTokenProvider})
       : _authTokenProvider = authTokenProvider {
     dio = Dio()..options.baseUrl = flavor.baseUrl;
-    while (dio.interceptors.isNotEmpty) {
-      dio.interceptors.removeLast();
-    }
+    // Remove dio's default ImplyContentTypeInterceptor so that our auth
+    // interceptor is the only one present (matching the test expectation).
+    dio.interceptors.removeImplyContentTypeInterceptor();
     dio.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) {
