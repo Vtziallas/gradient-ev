@@ -15,15 +15,17 @@ void applyAuthHeader(RequestOptions options, String? token) {
 /// Endpoint methods (API.md) land in feature-level repositories in later
 /// plans — this class owns only cross-cutting request config.
 class ApiClient {
-  late final Dio dio;
+  final Dio dio;
   final String? Function()? _authTokenProvider;
 
   ApiClient({required ApiFlavor flavor, String? Function()? authTokenProvider})
-      : _authTokenProvider = authTokenProvider {
-    dio = Dio()..options.baseUrl = flavor.baseUrl;
-    // Remove dio's default ImplyContentTypeInterceptor so that our auth
-    // interceptor is the only one present (matching the test expectation).
-    dio.interceptors.removeImplyContentTypeInterceptor();
+      : _authTokenProvider = authTokenProvider,
+        dio = Dio(BaseOptions(baseUrl: flavor.baseUrl)) {
+    // dio's default ImplyContentTypeInterceptor is left in place so that
+    // `dio.post('/x', data: {...})` sends JSON (Content-Type:
+    // application/json) rather than being url-encoded — required by the
+    // FastAPI backend (future plan). Only our auth interceptor is added
+    // here.
     dio.interceptors.add(
       InterceptorsWrapper(
         onRequest: (options, handler) {
