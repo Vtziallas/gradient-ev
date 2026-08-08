@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-import '../../app/theme/color_tokens.dart';
-import '../../app/theme/text_tokens.dart';
+import '../theme/color_tokens.dart';
+import '../theme/text_tokens.dart';
 
 enum EnergyClass { regen, efficient, medium, heavy, charge }
 

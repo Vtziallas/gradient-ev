@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../../app/theme/text_tokens.dart';
+import '../../../core/theme/text_tokens.dart';
 import '../../garage/presentation/garage_providers.dart';
 
 /// Home/Plan screen skeleton (UX.md §2 "Home / Plan" wireframe). Search and
