@@ -85,7 +85,7 @@ mobile/
 
 - [ ] **Step 1: Scaffold the Flutter project**
 
-Run from the repo root (`C:\Users\vtzia\git\ev_app`):
+Run from the repo root:
 
 ```bash
 flutter create --platforms=android,ios --org com.gradientev --project-name mobile mobile
